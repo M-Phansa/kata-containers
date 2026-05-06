@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+pub mod cgroupsv2;
 mod trans_from_agent;
 mod trans_from_shim;
 mod trans_into_agent;
