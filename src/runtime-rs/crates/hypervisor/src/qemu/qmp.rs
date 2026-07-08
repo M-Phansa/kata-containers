@@ -298,17 +298,17 @@ impl Qmp {
     }
 
     pub fn hotplug_memory(&mut self, size: u64) -> Result<()> {
-        let memdev_idx = self
-            .qmp
-            .execute(&qapi_qmp::query_memory_devices {})?
-            .into_iter()
-            .filter(|memdev| {
-                if let qapi_qmp::MemoryDeviceInfo::dimm(dimm_info) = memdev {
-                    return dimm_info.data.hotpluggable && dimm_info.data.hotplugged;
+        let memory_devices = self.qmp.execute(&qapi_qmp::query_memory_devices {})?;
+
+        let live_ids = memory_devices.iter().filter_map(|memdev| {
+            if let qapi_qmp::MemoryDeviceInfo::dimm(dimm_info) = memdev {
+                if dimm_info.data.hotpluggable && dimm_info.data.hotplugged {
+                    return dimm_info.data.id.as_deref();
                 }
-                false
-            })
-            .count();
+            }
+            None
+        });
+        let memdev_idx = next_hotplugged_memdev_idx(live_ids);
 
         let memory_backend_id = format!("hotplugged-{memdev_idx}");
 
@@ -1294,4 +1294,60 @@ pub fn get_qmp_socket_path(sid: &str) -> String {
 /// Generate a blockdev node name based on the given index.
 fn block_node_name(index: u64) -> String {
     format!("drive-{index}")
+}
+
+/// Return the next unused `hotplugged-N` index given the current live
+/// pc-dimm frontend ids (`frontend-to-hotplugged-N`). Ids that don't
+/// match the scheme are ignored.
+fn next_hotplugged_memdev_idx<'a, I>(live_ids: I) -> usize
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    live_ids
+        .into_iter()
+        .filter_map(|id| id.strip_prefix("frontend-to-hotplugged-"))
+        .filter_map(|n| n.parse::<usize>().ok())
+        .max()
+        .map(|n| n + 1)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_hotplugged_memdev_idx;
+
+    #[test]
+    fn empty_returns_zero() {
+        let ids: [&str; 0] = [];
+        assert_eq!(next_hotplugged_memdev_idx(ids.iter().copied()), 0);
+    }
+
+    #[test]
+    fn contiguous_ids_pick_next_slot() {
+        let ids = [
+            "frontend-to-hotplugged-0",
+            "frontend-to-hotplugged-1",
+            "frontend-to-hotplugged-2",
+        ];
+        assert_eq!(next_hotplugged_memdev_idx(ids.iter().copied()), 3);
+    }
+
+    #[test]
+    fn gap_from_middle_hotunplug_avoids_collision() {
+        let ids = [
+            "frontend-to-hotplugged-0",
+            "frontend-to-hotplugged-2",
+        ];
+        assert_eq!(next_hotplugged_memdev_idx(ids.iter().copied()), 3);
+    }
+
+    #[test]
+    fn gap_from_low_hotunplug_avoids_collision() {
+        let ids = [
+            "frontend-to-hotplugged-1",
+            "frontend-to-hotplugged-2",
+        ];
+        assert_eq!(next_hotplugged_memdev_idx(ids.iter().copied()), 3);
+    }
+
 }
